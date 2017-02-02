@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # link_crawler
 # modified by lalex0106 @ 2017.1.30
 # 主函数为link_crawler，根据规则爬取某主页下的网页超链接
@@ -8,10 +9,18 @@ import time
 from datetime import datetime
 import robotparser
 import Queue
+import csv
+import lxml.html
 
-def link_crawler(seed_url, link_regex= None, delay =5, max_depth=-1, max_urls=-1, headers={}, user_agent='lining', proxy=None, num_retries =1):
+# 处理写入文件时是中文字符的错误
+import sys
+reload(sys)
+sys.setdefaultencoding('utf-8')
+
+def link_crawler(seed_url, link_regex= None, delay =5, max_depth=-1, max_urls=-1, headers={}, user_agent='lining', proxy=None, num_retries =1, scrape_callback=None):
 	# 利用seed_url生成双端队列，后文仅在右侧操作,[]将字符串转换为list
-	crawl_queue = Queue.deque([seed_url])
+	# crawl_queue = Queue.deque([seed_url])
+	crawl_queue = [seed_url]
 	# 初始化seen为dict，其中seed_url不能为list，可以是tuple,string
 	seen = {seed_url:0}
 	num_urls = 0
@@ -33,6 +42,10 @@ def link_crawler(seed_url, link_regex= None, delay =5, max_depth=-1, max_urls=-1
 			links = []
 			# depth临时存放了本次循环的url的访问次数，通常最大访问次数为1
 			depth = seen[url]
+			# 自定义回调函数或回调类，通常是为了保存和分析下载的数据
+			# 本函数传入url是为了只处理特定url的html数据，目的是分解保存国家的各种数据到csv中
+			if scrape_callback:
+				links.extend(scrape_callback(url, html) or [])
 			if depth != max_depth:
 				if link_regex:
 					html = get_links(html)
@@ -54,6 +67,45 @@ def link_crawler(seed_url, link_regex= None, delay =5, max_depth=-1, max_urls=-1
 				break
 		else:
 			print 'Blocked by robots.txt', url
+
+# 使用回调类而不是回调函数，以保持csv中writer属性的状态
+class ScrapeCallback:
+	# 本类实现的功能是将view标签下的国家页面需要提取的信息保存到csv中
+	def __init__(self):
+		self.writer = csv.writer(open('countries.csv', 'w'))
+		self.fields = ('area', 'population', 'iso', 'country', 'capital', 'continent', 'tld', 'currency_code', 'currency_name', 'phone', 'postal_code_format', 'postal_code_regex', 'languages', 'neighbours')
+		self.writer.writerow(self.fields)
+	def __call__(self, url, html):
+		if re.search('/view/', url):
+			tree = lxml.html.fromstring(html)
+			row =[]
+			for field in self.fields:
+				row.append(tree.cssselect('table > tr#places_{}__row > td.w2p_fw'.format(field))[0].text_content())
+			self.writer.writerow(row)
+
+# sublime多行注释为command+/，为使代码复用，移植到类中
+# def scrape_callback(url, html):
+# 	if re.search('/view/', url):
+# 		tree= lxml.html.fromstring(html)
+# 		row= [tree.cssselect('table>tr#places_%s__row>td.w2p_fw' % field)[0].text_content() for field in FIELDS]
+# 		print url, row
+class ScrapeDoubanBook:
+	# 自定义豆瓣图书爬取数据，还不能正常工作
+	def __init__(self):
+		self.writer = csv.writer(open('douban_book.csv', 'w'))
+		# self.fields = ('作者','出版社','出版年','页数','定价','装帧','ISBN')
+		self.fields = ('Author','Press','Publication_year','Pages','Price','Binding','ISBN')
+		self.writer.writerow(self.fields)
+	def __call__(self,url, html):
+		if re.search('/subject/', url):
+			tree=lxml.html.fromstring(html)
+			row=[]
+			# 获取作者姓名
+			row.append(tree.xpath('//*[@id="info"]/span[1]/a/text()')[0])
+			for i in range(1,7):
+				# 依次获取出版社、出版年、页数、定价、装帧、ISBN
+				row.append(tree.xpath('//*[@id="info"]/text()[%d]' % (i*2+1))[0])
+			self.writer.writerow(row)
 
 class Throttle:
 	def __init__(self, delay):
@@ -136,5 +188,8 @@ def download(url, headers, proxy, num_retries =2, data = None):
 if __name__ == '__main__':
 	link_crawler('http://example.webscraping.com', '/(index|view)', delay=0, num_retries=1, user_agent='BadCrawler')
 	link_crawler('http://example.webscraping.com', '/(index|view)', delay=0, num_retries=1, max_depth=1, user_agent='GoodCrawler')
+	# 由于国家页面没有返回到超链接，只能爬取一次
+	link_crawler('http://example.webscraping.com/view/Belarus-21', '/(index|view)', scrape_callback=ScrapeCallback())
 	# 注意：上述link_regex只能获取href对应的是相对链接,下面示意的是绝对链接的提取
 	link_crawler('https://book.douban.com','/subject', delay=0, num_retries=1, user_agent='lalex')
+	link_crawler('https://book.douban.com','/subject', delay=0, num_retries=1, user_agent='lalex', scrape_callback=ScrapeDoubanBook())
